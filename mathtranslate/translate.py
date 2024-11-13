@@ -11,6 +11,32 @@ import time
 import re
 import tqdm.auto
 import concurrent.futures
+import os
+from jinja2 import Template
+from openai import OpenAI
+
+# Initialize the OpenAI LLM Client with environment configuration
+VLLM_CLIENT = OpenAI(
+    base_url=os.getenv("TransBASEURL", "http://localhost:11431/v1"),
+    api_key=os.getenv("TransKEY", "empty")
+)
+
+TransTemp = """
+Translating the text to Simplified Chinese:
+Instructions:
+- Keep the translation professional.
+- Translate the text to Simplified Chinese.
+- Do not include the original text in the translation.
+- Do not include any additional information in the translation.
+- Do not add any additional context to the translation.
+- Do not include any personal opinions in the translation.
+- For the domain-specific text, please translate it according to the domain knowledge.
+
+Input text:
+```{{text}}```
+Directly return the translated text without any further processing.
+"""
+
 default_begin = r'''
 \documentclass[UTF8]{article}
 \usepackage{xeCJK}
@@ -30,6 +56,9 @@ class TextTranslator:
         elif engine == 'tencent':
             from mathtranslate.tencent import Translator
             translator = Translator()
+        elif engine == 'llm':
+            translator = None 
+            self.llm_name = os.getenv("TransLLM", "meta-llama/Llama-3.1-70B-Instruct")
         else:
             assert False, "engine must be google or tencent"
         self.translator = translator
@@ -39,7 +68,10 @@ class TextTranslator:
         self.tot_char = 0
 
     def try_translate(self, text):
-        return self.translator.translate(text, self.language_to, self.language_from)
+        if self.engine == 'llm':
+            return self.trans_by_llm(text)
+        else:
+            return self.translator.translate(text, self.language_to, self.language_from)
 
     def translate(self, text):
         if not re.match(re.compile(r'.*[a-zA-Z].*', re.DOTALL), text):
@@ -57,6 +89,23 @@ class TextTranslator:
         self.number_of_calls += 1
         self.tot_char += len(text)
         return result
+    def trans_by_llm(self, text):
+        """Translate using LLM-based method."""
+        messages = [
+            {"role": "system", "content": "You are a professional translator skilled in AI. Translate to Simplified Chinese."},
+            {"role": "user", "content": Template(TransTemp).render(text=text)}
+        ]
+        try:
+            response = VLLM_CLIENT.chat.completions.create(
+                model=self.llm_name,
+                messages=messages,
+                max_tokens=12000,
+                temperature=0.2
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error in LLM translation: {e}")
+            return None
 
 
 class LatexTranslator:
